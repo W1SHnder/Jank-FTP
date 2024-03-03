@@ -81,8 +81,7 @@ int data_init_pasv(int ctrl_sock)
     send(ctrl_sock, err, strlen(err), 0);
     return -1;
   } //if
-  printf("Data port: %d\n", data_port);
-  //send data address to client and accept
+   //send data address to client and accept
   char data_ip[32];
   strncpy(data_ip, server_addr, strlen(server_addr));
   int h1, h2, h3, h4;
@@ -174,7 +173,6 @@ int ftp_cwd(int conn, char* arg)
     //send error message to client
     return -1;
   } //if
-  //ftp_pwd(conn); //print in client
   return 0;
 } //ftp_cwd
 
@@ -182,7 +180,6 @@ int ftp_cwd(int conn, char* arg)
 int ftp_retr(int conn, char* arg) {
   int data = data_sock_init(conn);
   if (!data) {
-    perror("data_sock_init");
     char* msg = "ERR 425\r\n";
     send(conn, msg, strlen(msg), 0);
     return -1;
@@ -197,40 +194,29 @@ int ftp_retr(int conn, char* arg) {
   } //if
 
   char* buf = (char*)malloc(1024);
-  int eof = 0;
-  while(!eof) {
-    int r = fread(buf, sizeof(char), 1024, file);
-    if (r < 0) {
-      perror("fread in RETR");
-      char* msg = "ERR 451\r\n";
-      send(data, msg, strlen(msg), 0);
-      close(data);
-      return -1;
-    } //if
-    if (r < 1024) { eof = 1; }
-    printf("len: %d, buf: %s\n", r, buf);
-    if (send(data, buf, r, 0) < 0) {
+  int bytesread = 1;
+  while((bytesread = fread(buf, 1, 1024, file)) > 0) {
+    if (send(data, buf, bytesread, 0) < 0) {
       perror("Failed data send in RETR");
       return -1;
     } //if
     memset(buf, 0, 1024);
   } //while
+  if (bytesread < 0) {
+    perror("fread in RETR");
+    char* msg = "ERR 451\r\n";
+    send(data, msg, strlen(msg), 0);
+    close(data);
+    return -1;
+  } //if
   fclose(file);
-  printf("reached EOF\n");
-  char* eofmsg = "EOF\r\n";
-  send(data, eofmsg, strlen(eofmsg), 0);
   close(data);
+  free(buf);
   return 0;
 } //ftp_retr
 
 int ftp_stor(int conn, char* arg) {
   int data = data_sock_init(conn);
-  if (data < 0) {
-    perror("data_sock_init");
-    char* msg = "ERR 425\r\n";
-    send(conn, msg, strlen(msg), 0);
-    return -1;
-  } //if
   FILE* file = fopen(arg, "w");
   if (file == NULL) {
     perror("fopen in STOR");
@@ -239,25 +225,26 @@ int ftp_stor(int conn, char* arg) {
     close(data);
     return -1;
   } //if
+
   char* buf = (char*)malloc(1024);
-  int eof = 0;
-  while(!eof) {
-    int r = recv(data, buf, 1024, 0);
-    if (r < 0) {
-      perror("recv in STOR");
-      char* msg = "ERR 451\r\n";
-      send(conn, msg, strlen(msg), 0); //send over ctrl when multithread for data is implemented
-      close(data);
-      return -1;
-    } //if
-    if (r < 1024) { eof = 1; }
-    printf("len: %d, buf: %s\n", r, buf);
-    if (fwrite(buf, sizeof(char), r, file) < 0) {
-      perror("Failed fwrite in STOR");
-      return -1;
-    } //if 
+  printf("reached\n");
+  int bytesread;
+  while((bytesread = recv(data, buf, 1024, 0)) > 0) {
+    printf("read: %d\n", bytesread);
+    printf("buf: %s\n", buf);
+    fwrite(buf, 1, bytesread, file);
+    fflush(file);
     memset(buf, 0, 1024);
   } //while
+
+  if (bytesread < 0) {
+    perror("recv in STOR");
+    char* msg = "ERR 451\r\n";
+    send(conn, msg, strlen(msg), 0);
+    close(data);
+    fclose(file);
+    return -1;
+  } //if
   fclose(file);
   close(data);
   return 0;
@@ -302,10 +289,8 @@ int data_sock_test(int conn) {
     perror("data_sock_test");
     return -1;
   } //if
-  printf("surely this will work\n");
   char msg[32];
   recv(data, msg, sizeof(msg), 0);
-  printf("test msg: %s\n", msg);
   char* msg2 = "TEST\r\n";
   if(send(data, msg2, strlen(msg2), 0) < 0) {
     perror("send");
@@ -323,14 +308,6 @@ int ftp_request_handler(int conn)
     perror("Connection failed\n");
     return -1;
   }
- 
-  /*
-  if (!data_sock_test(conn)) {
-    printf("Data test passed\n");
-  } else {
-    printf("Data test failed\n");
-  } //if
-  */
 
   int quit = -1;
 
@@ -409,7 +386,6 @@ int worker()
   while(1)
   {
     int conn = -1;
-
     sem_wait(&full);
     pthread_mutex_lock(&mutex);
     conn = request[num_requests-1];

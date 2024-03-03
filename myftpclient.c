@@ -9,7 +9,6 @@
 
 int parse_data_ip(char* response, char* ip, int* port) 
 {
-  printf("Response: %s\n", response);
   regex_t regex;
   regmatch_t match[7];
   char* pattern = "227 Entering Passive Mode \\(([0-9]+),([0-9]+),([0-9]+),([0-9]+),([0-9]+),([0-9]+)\\)";
@@ -58,18 +57,19 @@ int data_init(int ctrl_sock) {
   recv(ctrl_sock, response, 1024, 0);
   int data_port;
   char* data_ip = (char*)malloc(32);
+  memset(data_ip, 0, 32);
   if (parse_data_ip(response, data_ip, &data_port)) {
     printf("Error parsing data IP\n");
     free(response);
+    free(data_ip);
     return -1;
   } //if
-  printf("Data IP: %s\n", data_ip);
-  printf("Data Port: %d\n", data_port);
   struct sockaddr_in data_addr;
   data_addr.sin_family = AF_INET;
   data_addr.sin_addr.s_addr = inet_addr(data_ip);
   data_addr.sin_port = htons(data_port);
   int data_sock = socket(AF_INET, SOCK_STREAM, 0);
+  free(data_ip);
   //int data_conn = -1;
   if ((connect(data_sock, (struct sockaddr *) &data_addr, sizeof(data_addr))) < 0) {
     printf("Error connecting to data socket\n");
@@ -117,24 +117,31 @@ int exec_retr(int sock, char* filename)
   } //if
   
   int data_sock = data_init(sock);
-  printf("Data sock: %d\n", data_sock);
   char* buf = (char*)malloc(1024);
-  int eof = 1;
-  while (eof) {
-    if(recv(data_sock, buf, 1024, 0) < 0) {
-      perror("recv in RETR");
+  //int eof = 1;
+  int bytesread;
+  while ((bytesread = recv(data_sock, buf, 1024, 0)) > 0) {
+    printf("bytesread: %d\n", bytesread);
+    printf("buf: %s\n", buf);
+    if(fwrite(buf, 1, bytesread, new_file) < 0) {
+      perror("fwrite in RETR");
       fclose(new_file);
       free(buf);
+      close(data_sock);
+      remove(filename);
       return -1;
     } //if
-    if (strcmp(buf, "EOF\r\n")) { 
-      printf("buf: %s\n", buf); 
-      fwrite(buf, 1, strlen(buf), new_file);
-      memset(buf, 0, 1024);
-    } else {
-      eof = 0;
-    } //if
   } //while
+
+  if (bytesread < 0) {
+    perror("recv in RETR");
+    fclose(new_file);
+    free(buf);
+    close(data_sock);
+    remove(filename);
+    return -1;
+  } //if 
+  close(data_sock);
   fclose(new_file);
   free(buf);
   return 0;
@@ -153,19 +160,10 @@ int exec_stor(int sock, char* filename)
   } //if
   int data_sock = data_init(sock);
   char* buf = (char*)malloc(1024);
-  int eof = 0;
-  while (!eof) {
-    int r = fread(buf, sizeof(char), 1024, file);
+  int r = 1;
+  while ((r = fread(buf, sizeof(char), 1024, file)) > 0) {
     printf("buf: %s\n", buf);
-    if (r < 0) {
-      perror("fread in STOR");
-      fclose(file);
-      free(buf);
-      return -1;
-    } //if
-    if (r < 1024) {
-      eof = 1;
-    } //if
+
     if (send(data_sock, buf, r, 0) < 0) {
       perror("send in STOR");
       fclose(file);
@@ -174,9 +172,8 @@ int exec_stor(int sock, char* filename)
     } //if
     memset(buf, 0, 1024);
   } //while
-  char* eof_msg = "EOF\r\n";
-  if (send(data_sock, eof_msg, strlen(eof_msg), 0) < 0) {
-    perror("send in STOR");
+  if (r < 0) {
+    perror("fread in STOR");
     fclose(file);
     free(buf);
     return -1;
